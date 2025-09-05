@@ -1,8 +1,14 @@
 "use client";
+
 import React, { useEffect, useMemo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Check, Loader2, Calendar, ChevronRight, ChevronLeft } from "lucide-react";
 
+// ★ 你的 Google Apps Script Web App Endpoint（/exec）
+const GAS_ENDPOINT =
+  "https://script.google.com/macros/s/AKfycbyBhBT3qfALSjPVmQKtFFsXoXGpq9t_j0_KK1Zm8tl25gk_1vdIKtNgunBE_tztrUWd/exec";
+
+/* ----------------------------- 常數與工具 ----------------------------- */
 const S = (v: unknown) => (typeof v === "string" ? v : v == null ? "" : String(v));
 
 const TAIWAN_CITIES = [
@@ -34,10 +40,17 @@ function useLocalStorageState<T>(key: string, initial: T) {
   return [state, setState] as const;
 }
 
+/* ----------------------------- 型別 ----------------------------- */
 type Step = 0 | 1 | 2 | 3 | 4;
 type Status = "idle" | "submitting" | "success" | "error";
 
+/* ============================= 主元件 ============================= */
 export default function JPPropertyBuyerForm() {
+  // 防 Hydration：只在 client 掛載後才渲染互動式內容
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => { setMounted(true); }, []);
+  if (!mounted) return null;
+
   const [step, setStep] = useState<Step>(0);
   const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState("");
@@ -76,6 +89,7 @@ export default function JPPropertyBuyerForm() {
     notes: "",
   });
 
+  // 一次把可能是 undefined 的值轉字串，避免非受控→受控
   useEffect(() => {
     setForm((prev: any) => ({
       ...prev,
@@ -188,59 +202,45 @@ export default function JPPropertyBuyerForm() {
 
     const submissionId = ensureSubmissionId();
 
-    // 送出的 payload（已拆分「其他需求」、含法人欄位）
+    // 送往 Google Apps Script 的 payload（key 清晰好維護）
     const payload = {
       name: form.name_or_company,
       email: form.contact_email,
-      nationalityResidence,
-      lineId: form.contact_line,
       phone: String(form.contact_phone || ""),
-      budgetJpy10k: form.budget_max || form.budget_min ? `${form.budget_min || "0"}-${form.budget_max || "0"}` : "",
-      loanNeed: "",
+      lineId: form.contact_line,
+      nationalityResidence,
       purpose: form.purpose,
-      city: "",
-      area: areas,
-      propertyType: "",
-      condition: "",
-      ageMax: "",
+      reason: form.reason,
+      identity: form.identity,
+      company_name: form.identity === "法人" ? form.company_name : "",
+      company_representative: form.identity === "法人" ? form.company_representative : "",
+      budget_min: form.budget_min,
+      budget_max: form.budget_max,
+      budget_display: budgetDisplay,
+      funding_source: form.funding_source,
+      has_jp_bank_account: form.has_jp_bank_account,
+      preferred_areas: areas,
+      size_min_sqm: form.size_min_sqm,
+      size_max_sqm: form.size_max_sqm,
       layout: form.layout,
-      sizeMin: form.size_min_sqm,
-      walkMin: "",
-      rentTarget: "",
-      yieldTarget: "",
-      selfUseFreq: "",
-      minpakuOk: "",
-      viewingTime: viewing,
-
-      // 拆出的獨立欄位
-      Budget: budgetDisplay,
-      Identity: form.identity,
-
-      // ★ 法人欄位
-      CompanyName: form.identity === "法人" ? form.company_name : "",
-      CompanyRepresentative: form.identity === "法人" ? form.company_representative : "",
-
-      Funding: `${form.funding_source} / ${form.has_jp_bank_account}`,
-      PreferredAreas: areas,
-      Size: (form.size_min_sqm || form.size_max_sqm) ? `${form.size_min_sqm || "?"}~${form.size_max_sqm || "?"}㎡` : "",
-      Layout: form.layout,
-      NeedParking: form.need_parking ? "需要" : "不一定",
-      PetFriendly: form.pet_friendly ? "可" : "不限",
-      Language: form.jp_language_ability,
-      Notes: form.notes,
-
-      otherNote: "",   // 舊「其他需求」欄位，保留空白
+      need_parking: form.need_parking ? "需要" : "不一定",
+      pet_friendly: form.pet_friendly ? "可" : "不限",
+      jp_language_ability: form.jp_language_ability,
+      notes: form.notes,
+      viewing_time: viewing,
       submissionId,
     };
 
     try {
-      const res = await fetch("/api/submit", {
+      const res = await fetch(GAS_ENDPOINT, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      const j = await res.json();
-      if (!res.ok || !j.ok) throw new Error(j.error || `HTTP ${res.status}`);
+      const text = await res.text().catch(() => "");
+      if (!res.ok || (text && !/success/i.test(text))) {
+        throw new Error(text || `HTTP ${res.status}`);
+      }
 
       setValuesJustSent({ name: form.name_or_company, email: form.contact_email });
       setStatus("success");
@@ -251,6 +251,7 @@ export default function JPPropertyBuyerForm() {
     }
   }
 
+  /* ----------------------------- 成功畫面 ----------------------------- */
   if (status === "success") {
     const firstTime = submittedCount === 1;
     return (
@@ -284,6 +285,7 @@ export default function JPPropertyBuyerForm() {
     );
   }
 
+  /* ----------------------------- 表單畫面 ----------------------------- */
   const progress = Math.round(((step + 1) / STEP_TITLES.length) * 100);
 
   return (
@@ -303,6 +305,7 @@ export default function JPPropertyBuyerForm() {
           <div className="text-xs text-slate-500">已完成 {progress}%</div>
         </div>
 
+        {/* ✅ 這裡只有一個 <form>，避免巢狀 */}
         <form onSubmit={handleSubmit} className="grid gap-6">
           <AnimatePresence mode="wait">
             {/* 步驟 0 */}
@@ -477,7 +480,12 @@ export default function JPPropertyBuyerForm() {
                 </button>
               )}
               {step === STEP_TITLES.length - 1 && (
-                <button type="submit" disabled={!canNext || status === "submitting"} className="inline-flex items-center gap-2 rounded-2xl bg-slate-900 text-white px-6 py-3 disabled:opacity-50">
+                <button
+                  suppressHydrationWarning
+                  type="submit"
+                  disabled={!canNext || status === "submitting"}
+                  className="inline-flex items-center gap-2 rounded-2xl bg-slate-900 text-white px-6 py-3 disabled:opacity-50"
+                >
                   {status === "submitting" ? (<><Loader2 className="w-4 h-4 animate-spin" /> 送出中</>) : (<><Check className="w-4 h-4" /> 送出</>)}
                 </button>
               )}
@@ -493,6 +501,7 @@ export default function JPPropertyBuyerForm() {
   );
 }
 
+/* ----------------------------- 小元件 ----------------------------- */
 function Select({ value, onChange, options }: { value: string; onChange: (v: string) => void; options: readonly string[] }) {
   return (
     <div className="relative">
